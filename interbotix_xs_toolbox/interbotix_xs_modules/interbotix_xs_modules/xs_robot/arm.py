@@ -713,7 +713,7 @@ class InterbotixArmXSInterface:
 
     def follow_waypoint_trajectory(
         self,
-        waypoints: List[List[float]] = [[0.0]*5],
+        waypoints_inp: List[List[float]] = [[0.0]*5],
         durations: List[float] = [],
         midwp_period: float = 0.05
     ) -> bool:
@@ -721,10 +721,10 @@ class InterbotixArmXSInterface:
         Vikhyat-created-function:
         Follows a joint-space  trajectory defined by:
             sequence of n waypoints 
-            and the (n-1) transition durations.
+            and the n transition durations.
 
-        :param waypoints: list of n lists, with each list containing (n_joints) joint angles
-        :param durations: list of (n-1) transition times between the n waypoints
+        :param waypoints_inp: list of n lists, with each list containing (n_joints) joint angles
+        :param durations: list of n transition times between the n waypoints
         :param midwp_period: duration of each substep that each transition is broken down to 
                              (see wp_period in set_ee_cartesian_trajectory)
         :return: `True` if a trajectory was successfully planned and executed; otherwise `False`
@@ -733,22 +733,22 @@ class InterbotixArmXSInterface:
         self.core.get_logger().debug(
             (
                 f'Setting ee trajectory to components=\n'
-                f'\twaypoints={waypoints}\n'
+                f'\twaypoints={waypoints_inp}\n'
                 f'\tdurations={durations}\n'
                 f'\tmidwp_period={midwp_period}'
             )
         )
-        
-        # rpy = ang.rotation_matrix_to_euler_angles(self.T_sb[:3, :3])
-        # T_sy = np.identity(4)
-        # T_sy[:3, :3] = ang.euler_angles_to_rotation_matrix([0.0, 0.0, rpy[2]])
-        # T_yb = np.dot(mr.TransInv(T_sy), self.T_sb)
-        # rpy[2] = 0.0
+
         tmp_moving_time = self.moving_time
         tmp_accel_time = self.accel_time
+        
+        waypoints = [x[:] for x in waypoints_inp]
+
+        # add current joint-state as first waypoint
+        waypoints.insert(0, [float(x) for x in self.joint_commands])
 
         joint_traj = JointTrajectory()
-        joint_positions = np.array([float(cmd) for cmd in self.joint_commands]) # current angles
+        joint_positions = waypoints[0] # current angles
         time_from_start = 0
 
         for wp_i in range(len(waypoints)-1):
@@ -767,7 +767,8 @@ class InterbotixArmXSInterface:
                     nanosec=int(time_from_start)
                 )
 
-                time_from_start += i * midwp_period * S_TO_NS
+                # also just copy this arm file to the install dir so that we don't have build again
+                time_from_start += midwp_period * S_TO_NS
 
                 joint_traj.points.append(joint_traj_point)
                 
@@ -787,6 +788,8 @@ class InterbotixArmXSInterface:
 
         self.set_trajectory_time(durations[0], durations[0]/3)
         joint_traj.joint_names = self.group_info.joint_names
+        
+        ### redundant ?
         current_positions = []
         with self.core.js_mutex:
             for name in joint_traj.joint_names:
@@ -794,6 +797,9 @@ class InterbotixArmXSInterface:
                     self.core.joint_states.position[self.core.js_index_map[name]]
                 )
         joint_traj.points[0].positions = current_positions
+
+        print(joint_traj.points)
+
         joint_traj.header.stamp = self.core.get_clock().now().to_msg()
         self.core.pub_traj.publish(
             JointTrajectoryCommand(
@@ -801,7 +807,6 @@ class InterbotixArmXSInterface:
             )
         )
         time.sleep(moving_time)
-        # self.T_sb = T_sd
         self._update_Tsb()
         self.joint_commands = joint_positions
         self.set_trajectory_time(tmp_moving_time, tmp_accel_time)
